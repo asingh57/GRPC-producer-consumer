@@ -2,6 +2,7 @@
 #include "store.h"
 
 
+//puts in a async vendor request
 std::shared_ptr<BidFinishInfo> VendorClientChannel::getProductBid(const std::string& product) {
     BidQuery request;
     request.set_product_name(product);
@@ -16,6 +17,8 @@ std::shared_ptr<BidFinishInfo> VendorClientChannel::getProductBid(const std::str
     std::shared_ptr<Status> st=  std::shared_ptr<Status>(new Status);
 
     rpc->Finish(vr.get(), st.get(), (void*)1);
+
+    //store the async callback info into shared pointer for later use
     std::shared_ptr<BidFinishInfo> finInf=std::shared_ptr<BidFinishInfo>(new BidFinishInfo);
 
     finInf->vr=vr;
@@ -25,6 +28,8 @@ std::shared_ptr<BidFinishInfo> VendorClientChannel::getProductBid(const std::str
     finInf->ctx=ctx;
     return finInf;
 }
+
+//processes the reply to the async request put in using VendorClientChannel::getProductBid
 std::shared_ptr<BidReply> VendorClientChannel::getVendorResult(std::shared_ptr<BidFinishInfo> bfi){ 
     void* got_tag;
     bool ok = false;
@@ -42,38 +47,25 @@ std::shared_ptr<BidReply> VendorClientChannel::getVendorResult(std::shared_ptr<B
 
 
 
-//callback for threadpool to finish receiving data
-void lockingThreadpoolVendorCallFinishRequest(void* data){
-    
-        cout <<"finish request started"<<endl;
-    blockingThreadpoolVendorCallerData* myThreadInfo= static_cast<blockingThreadpoolVendorCallerData*>(data);  
 
-    myThreadInfo->myVendorReply= myThreadInfo->myVendorChannel->getVendorResult(myThreadInfo->myBidFinishInfo);
-    myThreadInfo->my_thread_mutex.unlock();//unlock to indicate process is done
-
-
-    
-        cout <<"finish request done"<<endl;
-}
-
-
-//callback for threadpool that calls into the assigned vendor 
+//function pointer for threadpool that calls into the assigned vendor 
 void lockingThreadpoolVendorCallStartRequest(void* data){
 
-    
-        cout <<"start request started"<<endl;
+    //cast into blockingThreadpoolVendorCallerData
     blockingThreadpoolVendorCallerData* myThreadInfo= static_cast<blockingThreadpoolVendorCallerData*>(data);
 
+    //asynchronously start bid request
     myThreadInfo->myBidFinishInfo= myThreadInfo->myVendorChannel->getProductBid(myThreadInfo->productName);
 
-    //now we will place another job on queue to wait and finish my request
+
+
+    //now we will place another job on threadpool queue to wait and finish my request
     
     shared_ptr<Job> jb(new Job);
     jb->action=&lockingThreadpoolVendorCallFinishRequest;
     jb->data=data;
     
-    
-        cout <<"added finish request"<<endl;
+   
 
     //add to thread queue
     myThreadInfo->tp_->addToJobQueue(jb);
@@ -82,16 +74,33 @@ void lockingThreadpoolVendorCallStartRequest(void* data){
 
 
 
+//callback for threadpool to finish receiving data started by lockingThreadpoolVendorCallStartRequest
+void lockingThreadpoolVendorCallFinishRequest(void* data){
+    
+    //cast into blockingThreadpoolVendorCallerData
+    //get job that has been asynchronously requested
+    blockingThreadpoolVendorCallerData* myThreadInfo= static_cast<blockingThreadpoolVendorCallerData*>(data);  
+
+    //finish obtaining the result
+    myThreadInfo->myVendorReply= myThreadInfo->myVendorChannel->getVendorResult(myThreadInfo->myBidFinishInfo);
+    myThreadInfo->my_thread_mutex.unlock();//unlock to indicate process is done
+    
+
+}
+
+    
   ServerImpl::~ServerImpl() {
     server_->Shutdown();
     cq_->Shutdown();
   }
 
+//assign thread pool and vendor channels
   ServerImpl::ServerImpl(std::shared_ptr<Threadpool> tp ,vector<VendorClientChannel*> vcList){
      tp_=tp;
     vcList_=vcList;
     }
 
+//run server
   void ServerImpl::Run(int port) {
     std::string server_address("0.0.0.0:"+to_string(port));
     ServerBuilder builder;
@@ -110,6 +119,7 @@ void lockingThreadpoolVendorCallStartRequest(void* data){
       Proceed();
     }
 
+//handle requests by client asynchronously by spawning individual storeCallData structures
   void ServerImpl::HandleRpcs() {
     new StoreCallData(&service_, cq_.get(),vcList_,tp_);
     void* tag; 
@@ -137,13 +147,14 @@ void lockingThreadpoolVendorCallStartRequest(void* data){
         vector<shared_ptr<Job>> myJobs;
         
         for(int i=0;i<vcList_.size();i++){
-            //add requests to pool
+            //create information neceassary for thread on a threadpool
             shared_ptr<blockingThreadpoolVendorCallerData> dt(new blockingThreadpoolVendorCallerData(vcList_[i],request_.product_name(),tp_));
             
-            
+            //store all the requests I made
             myPoolReq.push_back(dt);
             
-        cout <<"setting data"<<endl;
+            //create new query job for the threadpoolpool
+            cout <<"setting data"<<endl;
             shared_ptr<Job> jb(new Job);
             jb->data=static_cast<void*>(dt.get()); 
             jb->action=&lockingThreadpoolVendorCallStartRequest;
@@ -151,7 +162,7 @@ void lockingThreadpoolVendorCallStartRequest(void* data){
             myJobs.push_back(jb);
 
             
-            //add to q
+            //add to threadpool job q
             tp_->addToJobQueue(jb);
             
             
@@ -160,26 +171,24 @@ void lockingThreadpoolVendorCallStartRequest(void* data){
     
         cout <<"now filling reply"<<endl;
 
-        //now lets fill for our reply
-        
+        //now obtain all our replies from vendors from all worker threads
         for(int i=0;i<myJobs.size();i++){
 
         //first block on thread data
-        cout <<"trying to lock"<<endl;
 
         myPoolReq[i]->my_thread_mutex.lock();
         //wait till this lock gets unlocked after thread is done acting on it
         myPoolReq[i]->my_thread_mutex.unlock();
             
         
-        cout <<"setting reply"<<endl;
+        //merge all replies received into a single message to be sent to the client
         ProductInfo* pd= reply_.add_products();
         pd->set_price(myPoolReq[i]->myVendorReply->price());
         pd->set_vendor_id(myPoolReq[i]->myVendorReply->vendor_id());
 
         }
 
-        
+        //send reply to client
         cout <<"reaching finish"<<endl;
         status_ = FINISH;
         responder_.Finish(reply_, Status::OK, this);
@@ -190,11 +199,12 @@ void lockingThreadpoolVendorCallStartRequest(void* data){
     }
 
 
+//initialise threadpool of a given size
 Threadpool::Threadpool(int threadCt):m_shutdown(false),m_jbs(),m_pool(threadCt),m_job_mutex(){
         createThreadqueue(threadCt);
 }
 
-
+//each worker in the threadpool loops infinitely to obtain a job
 void Threadpool::infiniteLooper(Threadpool *tp){
         while(!tp->m_shutdown){
             shared_ptr<Job> myJob=NULL;
@@ -206,6 +216,7 @@ void Threadpool::infiniteLooper(Threadpool *tp){
             }
             tp->m_job_mutex.unlock();
             if(myJob){
+                //if job exists, do it
                 myJob->action(myJob->data);
             }
             else{
@@ -214,6 +225,7 @@ void Threadpool::infiniteLooper(Threadpool *tp){
         }
 }
 
+//create thread queue
 void Threadpool::createThreadqueue(int ct){
         
 
@@ -224,6 +236,7 @@ void Threadpool::createThreadqueue(int ct){
 
 }
 
+//destroy threadpool
 Threadpool::~Threadpool(){
         m_shutdown=true;
         for(auto & t : m_pool)
@@ -233,6 +246,7 @@ Threadpool::~Threadpool(){
     }
 
 
+//add job to protected queue
 void Threadpool::addToJobQueue(shared_ptr<Job> jb){
     m_job_mutex.lock();
     m_jbs.push(jb);
@@ -243,31 +257,33 @@ void Threadpool::addToJobQueue(shared_ptr<Job> jb){
 int main(int argc, char** argv) {
 
     if(argc<4){
-        cout<<  "invalid arg count" << endl;
+        cout<<  "invalid arg count: need args: vendor-filename port threadCount" << endl;
         return -1;
     }
+    //read params
     string fileName=string(argv[1]);
     int port=atoi(argv[2]);
     int threadCt=atoi(argv[3]);
 
+    //read vendor filename
     std::ifstream infile(fileName);
-
-
     vector<VendorClientChannel*> VendorClientChannelList;
     if (infile.is_open())
       {
       string line;
         while ( getline (infile,line) )
         {
+            //create a channel per vendor
             VendorClientChannelList.push_back(new VendorClientChannel(grpc::CreateChannel(
       line, grpc::InsecureChannelCredentials())));
         }
         infile.close();
       }
 
-    
+    //initialise threadpool
     std::shared_ptr<Threadpool> tp(new Threadpool(threadCt));
 
+    //create server and assign threadpool + vendor channels
     ServerImpl server(tp,VendorClientChannelList);
     server.Run(port);                                                       
 
