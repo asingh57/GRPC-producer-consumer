@@ -1,0 +1,17 @@
+[ 42%] Built target p3protolib
+Scanning dependencies of target store
+[ 50%] Building CXX object src/CMakeFiles/store.dir/store.cc.o
+[ 57%] Linking CXX executable ../bin/store
+symbolic link /home/abhi/Desktop/OMSCS/AOS/project3/build/bin/vendor_addresses.txt created.
+[ 57%] Built target store
+Scanning dependencies of target run_tests
+[ 64%] Building CXX object test/CMakeFiles/run_tests.dir/client.cc.o
+[ 71%] Building CXX object test/CMakeFiles/run_tests.dir/run_tests.cc.o
+[ 78%] Linking CXX executable ../bin/run_tests
+symbolic link /home/abhi/Desktop/OMSCS/AOS/project3/build/bin/product_query_list.txt created.
+[ 78%] Built target run_tests
+Scanning dependencies of target run_vendors
+[ 85%] Building CXX object test/CMakeFiles/run_vendors.dir/vendor.cc.o
+[ 92%] Building CXX object test/CMakeFiles/run_vendors.dir/run_vendors.cc.o
+[100%] Linking CXX executable ../bin/run_vendors
+[100%] Built target run_vendors
